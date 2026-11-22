@@ -4,7 +4,7 @@ Turn a 3D model (STL, OBJ or 3MF) into a full-size SVG outline you can send stra
 
 It works like putting a real object on a scanner. The model is flattened, and its outline is traced at true size in millimeters. Pockets and steps in the part come out as separate colors, so you can engrave each depth with its own setting.
 
-![Example output: red outline and hole, blue 2 mm pocket, green 4 mm pocket](examples/testplate.png)
+![Before: a 3D mountain plaque with three recessed pockets. After: its SVG, with the red outer cut line and the three pockets traced in blue.](examples/mountain-before-after.png)
 
 ## Install
 
@@ -39,6 +39,10 @@ testplate.stl -> examples/testplate.svg
 |---|---|
 | Red | Outer cut line, plus any hole that goes all the way through |
 | Blue, green, magenta, orange, ... | One color per pocket or step depth: flat surfaces lower than the top |
+
+For example, the test plate in [`examples/`](examples) has a through-hole (red), a 2 mm pocket (blue), and a 4 mm spot inside that pocket (green):
+
+![Test plate output: red outline and hole, blue 2 mm pocket, green 4 mm pocket](examples/testplate.png)
 
 - The SVG is sized in millimeters, so it imports at 1:1 in LightBurn, Glowforge, xTool Creative Space, Inkscape and similar tools.
 - Each depth is also its own SVG group, named like `depth_2.0mm`, which makes it easy to assign to a layer.
