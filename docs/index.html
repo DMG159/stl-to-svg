@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STL to SVG for laser cutters</title>
+<meta name="description" content="Turn a 3D model (STL or OBJ) into a full-size SVG for your laser cutter: trace its outline and pockets, or slice it into stackable plywood layers. Free, runs in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%276%27 fill=%27%231f4d43%27/%3E%3Cpath d=%27M16 5 27 11v12l-11 6-11-6V11z%27 fill=%27none%27 stroke=%27%23e8f1ec%27 stroke-width=%272%27/%3E%3Cpath d=%27M5 23h22%27 stroke=%27%23ff3b3b%27 stroke-width=%272.2%27/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --mat: #1f4d43;
+    --mat-deep: #173c34;
+    --grid: rgba(232, 241, 236, 0.07);
+    --grid-major: rgba(232, 241, 236, 0.13);
+    --ink-on-mat: #e8f1ec;
+    --muted-on-mat: #a9c4ba;
+    --sheet: #ffffff;
+    --ink: #17231f;
+    --muted: #5b6b65;
+    --line: #d5ddd9;
+    --safety: #f2c230;
+    --safety-deep: #d9a915;
+    --radius-sheet: 3px;
+    --radius-control: 8px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: "Archivo", system-ui, sans-serif;
+    font-variation-settings: "wdth" 100;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--ink-on-mat);
+    background-color: var(--mat);
+    background-image:
+      linear-gradient(var(--grid-major) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-major) 1px, transparent 1px),
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
+    min-height: 100vh;
+  }
+  a { color: inherit; text-underline-offset: 3px; }
+  a:hover { color: var(--safety); }
+  :focus-visible { outline: 3px solid var(--safety); outline-offset: 2px; }
+
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+  header.top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 0;
+  }
+  .wordmark {
+    font-weight: 800; font-size: 1.05rem; letter-spacing: 0.01em;
+    font-variation-settings: "wdth" 125; text-decoration: none;
+  }
+  .top nav { display: flex; gap: 20px; font-size: 0.95rem; }
+
+  .intro { padding: 36px 0 28px; max-width: 46rem; }
+  h1 {
+    margin: 0 0 14px;
+    font-size: clamp(2.2rem, 5.2vw, 3.9rem);
+    line-height: 1.02;
+    font-weight: 800;
+    font-variation-settings: "wdth" 125;
+    letter-spacing: -0.01em;
+  }
+  .intro p { margin: 0; font-size: 1.15rem; color: var(--muted-on-mat); max-width: 38rem; }
+
+  .tool {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 24px;
+    align-items: start;
+    padding-bottom: 48px;
+  }
+
+  /* Settings panel */
+  .panel {
+    background: var(--mat-deep);
+    border: 1px solid rgba(232, 241, 236, 0.14);
+    border-radius: var(--radius-control);
+    padding: 20px;
+  }
+  .panel h2 {
+    font-size: 1rem; margin: 0 0 12px; font-weight: 700;
+  }
+  .modes {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+    background: rgba(0, 0, 0, 0.22); border-radius: var(--radius-control); padding: 4px;
+    margin-bottom: 8px;
+  }
+  .modes button {
+    font: inherit; font-weight: 600; color: var(--muted-on-mat);
+    background: transparent; border: 0; border-radius: 6px; padding: 9px 8px; cursor: pointer;
+  }
+  .modes button[aria-pressed="true"] { background: var(--ink-on-mat); color: var(--mat-deep); }
+  .mode-help { font-size: 0.9rem; color: var(--muted-on-mat); margin: 0 0 18px; min-height: 2.7em; }
+
+  .field { margin-bottom: 14px; }
+  .field label, .field .label { display: block; font-size: 0.9rem; font-weight: 600; margin-bottom: 5px; }
+  .field .hint { font-size: 0.82rem; color: var(--muted-on-mat); margin-top: 4px; }
+  select, input[type="number"] {
+    width: 100%; font: inherit; color: var(--ink);
+    background: var(--ink-on-mat); border: 1px solid transparent; border-radius: 6px; padding: 8px 10px;
+  }
+  .unit { position: relative; }
+  .unit input { padding-right: 42px; }
+  .unit span { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 0.9rem; pointer-events: none; }
+  .check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; font-size: 0.95rem; }
+  .check input { margin-top: 4px; width: 17px; height: 17px; accent-color: var(--safety); }
+  .check small { display: block; color: var(--muted-on-mat); font-size: 0.82rem; }
+  [hidden] { display: none !important; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    font: inherit; font-weight: 700; color: var(--ink);
+    background: var(--safety); border: 0; border-radius: var(--radius-control);
+    padding: 12px 18px; cursor: pointer; text-decoration: none;
+  }
+  .btn:hover { background: var(--safety-deep); color: var(--ink); }
+  .btn:disabled { background: rgba(232, 241, 236, 0.12); color: var(--muted-on-mat); cursor: not-allowed; }
+  .btn.ghost { background: transparent; color: var(--ink-on-mat); border: 1px solid rgba(232, 241, 236, 0.35); }
+  .btn.ghost:hover { border-color: var(--safety); color: var(--safety); }
+  .panel .btn { width: 100%; margin-top: 6px; }
+  .panel .btn + .btn { margin-top: 10px; }
+
+  /* Sheet / preview */
+  .sheet-area { min-width: 0; }
+  .sheet {
+    background: var(--sheet); color: var(--ink);
+    border-radius: var(--radius-sheet);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.25), 0 18px 40px -18px rgba(0,0,0,0.55);
+    min-height: 460px; position: relative;
+    display: flex; flex-direction: column;
+  }
+  .drop {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 40px 24px; border: 2px dashed var(--line); border-radius: var(--radius-sheet);
+    margin: 14px; cursor: pointer; transition: border-color .15s, background-color .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--mat); background: #f3f7f5; }
+  .drop svg.icon { width: 56px; height: 56px; margin-bottom: 14px; }
+  .drop strong { font-size: 1.3rem; font-variation-settings: "wdth" 112; }
+  .drop p { margin: 6px 0 0; color: var(--muted); }
+  .examples { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .examples span { color: var(--muted); font-size: 0.9rem; width: 100%; }
+  .examples button {
+    font: inherit; font-size: 0.9rem; color: var(--ink); background: #eef3f1; border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 14px; cursor: pointer;
+  }
+  .examples button:hover { border-color: var(--mat); }
+
+  .result { display: flex; flex-direction: column; flex: 1; }
+  .result-head {
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px;
+    padding: 16px 20px 12px; border-bottom: 1px solid var(--line);
+  }
+  .filename { font-weight: 700; font-size: 1.05rem; word-break: break-all; }
+  .summary { color: var(--muted); font-size: 0.92rem; }
+  .preview { padding: 20px; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; }
+  .preview svg { width: 100%; height: auto; max-height: 70vh; }
+  .preview svg path { stroke-width: 1.3px; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+  .legend { list-style: none; margin: 0; padding: 12px 20px 16px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 0.92rem; }
+  .legend li { display: flex; align-items: center; gap: 8px; }
+  .legend i { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+  .warnings { margin: 0; padding: 0 20px 14px; color: #8a4b00; font-size: 0.92rem; list-style: none; }
+
+  .status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.78); font-weight: 600; color: var(--ink); border-radius: var(--radius-sheet); }
+  .error { margin: 0 20px 16px; padding: 12px 14px; border-radius: 6px; background: #fdecea; color: #8c1d18; font-size: 0.95rem; }
+
+  .notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; padding: 8px 0 56px; }
+  .notes h2 { font-size: 1.05rem; margin: 0 0 6px; font-variation-settings: "wdth" 112; }
+  .notes p { margin: 0; color: var(--muted-on-mat); font-size: 0.95rem; }
+
+  footer {
+    border-top: 1px solid rgba(232, 241, 236, 0.16);
+    padding: 22px 0 34px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 24px;
+    color: var(--muted-on-mat); font-size: 0.92rem;
+  }
+  footer strong { color: var(--ink-on-mat); }
+
+  @media (max-width: 860px) {
+    .tool { grid-template-columns: 1fr; }
+    .sheet-area { order: -1; }
+    .notes { grid-template-columns: 1fr; gap: 20px; }
+    .sheet { min-height: 340px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="wordmark" href="./">STL to SVG</a>
+      <nav>
+        <a href="https://github.com/DMG159/stl-to-svg">GitHub</a>
+        <a href="https://dillonmakes.tech">Dillon Makes</a>
+      </nav>
+    </header>
+
+    <section class="intro">
+      <h1>3D model in, laser file out.</h1>
+      <p>Drop in an STL and get a full-size SVG for your laser cutter. Trace the outline and pockets, or slice the model into layers to cut from plywood and stack.</p>
+    </section>
+
+    <main class="tool">
+      <form class="panel" id="settings" onsubmit="return false">
+        <h2 id="mode-label">What do you want?</h2>
+        <div class="modes" role="group" aria-labelledby="mode-label">
+          <button type="button" data-mode="outline" aria-pressed="true">Outline</button>
+          <button type="button" data-mode="slice" aria-pressed="false">Slice</button>
+        </div>
+        <p class="mode-help" id="mode-help"></p>
+
+        <div class="field">
+          <label for="view">Look at the model from</label>
+          <select id="view">
+            <option value="auto">Automatic</option>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+            <option value="front">Front</option>
+            <option value="back">Back</option>
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+          </select>
+          <div class="hint" id="view-hint"></div>
+        </div>
+
+        <div data-for="outline">
+          <label class="check"><input type="checkbox" id="pockets" checked>
+            <span>Trace pockets and steps<small>Each depth gets its own color, so you can engrave it separately.</small></span></label>
+        </div>
+
+        <div data-for="slice" hidden>
+          <div class="field">
+            <label for="thickness">Sheet thickness</label>
+            <div class="unit"><input type="number" id="thickness" value="3" min="0.5" step="0.1" inputmode="decimal"><span>mm</span></div>
+          </div>
+          <div class="field">
+            <label for="sheet-width">Laser bed or sheet width</label>
+            <div class="unit"><input type="number" id="sheet-width" value="300" min="20" step="10" inputmode="decimal"><span>mm</span></div>
+            <div class="hint">Layers wrap into rows at this width.</div>
+          </div>
+          <label class="check"><input type="checkbox" id="guides" checked>
+            <span>Glue guides<small>Marks where the next layer sits.</small></span></label>
+          <label class="check"><input type="checkbox" id="numbers" checked>
+            <span>Layer numbers<small>1 is the bottom layer.</small></span></label>
+        </div>
+
+        <button type="button" class="btn" id="download" disabled>Download SVG</button>
+        <button type="button" class="btn ghost" id="choose">Choose another file</button>
+      </form>
+
+      <div class="sheet-area">
+        <div class="sheet" id="sheet">
+          <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose a 3D model file">
+            <svg class="icon" viewBox="0 0 56 56" aria-hidden="true" fill="none" stroke="#1f4d43" stroke-width="2" stroke-linejoin="round">
+              <path d="M28 6 48 17v22L28 50 8 39V17z"/><path d="M8 17l20 11 20-11M28 28v22"/>
+              <path d="M8 39h40" stroke="#ff0000" stroke-dasharray="3 3"/>
+            </svg>
+            <strong>Drop an STL or OBJ file here</strong>
+            <p>or click to choose one. Your file never leaves your computer.</p>
+            <div class="examples">
+              <span>No model handy? Try one:</span>
+              <button type="button" data-example="testplate.stl" data-mode="outline">Plate with pockets</button>
+              <button type="button" data-example="dome_ring.stl" data-mode="slice">Ball and ring, sliced</button>
+            </div>
+          </div>
+          <div class="result" id="result" hidden>
+            <div class="result-head">
+              <span class="filename" id="filename"></span>
+              <span class="summary" id="summary" aria-live="polite"></span>
+            </div>
+            <div class="preview" id="preview"></div>
+            <ul class="warnings" id="warnings"></ul>
+            <ul class="legend" id="legend"></ul>
+          </div>
+          <p class="error" id="error" role="alert" hidden></p>
+          <div class="status" id="status" hidden>Working…</div>
+        </div>
+        <input type="file" id="file" accept=".stl,.obj" hidden>
+      </div>
+    </main>
+
+    <section class="notes">
+      <div>
+        <h2>True size</h2>
+        <p>The SVG is drawn in millimeters, so it imports at 1:1 in LightBurn, Glowforge, xTool Creative Space and Inkscape.</p>
+      </div>
+      <div>
+        <h2>One color per job</h2>
+        <p>Red is always the cut line. Pockets, glue guides and layer numbers each get their own color, so you can set them to score or engrave.</p>
+      </div>
+      <div>
+        <h2>Private by design</h2>
+        <p>Everything runs in your browser. Nothing is uploaded. Prefer the command line? Get the <a href="https://github.com/DMG159/stl-to-svg">Python version on GitHub</a>.</p>
+      </div>
+    </section>
+
+    <footer>
+      <span>Made by <strong><a href="https://dillonmakes.tech">Dillon Makes</a></strong></span>
+      <span>Free and open source under the MIT license. <a href="https://github.com/DMG159/stl-to-svg/issues">Report a problem</a></span>
+    </footer>
+  </div>
+
+  <script src="clipper.js"></script>
+  <script src="core.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

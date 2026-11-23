@@ -2,6 +2,11 @@
 
 Turn a 3D model (STL, OBJ or 3MF) into full-size SVG files you can send straight to a laser cutter.
 
+**Use it in your browser, nothing to install: [dmg159.github.io/stl-to-svg](https://dmg159.github.io/stl-to-svg/)**
+Drop in an STL or OBJ file, pick a mode, and download the SVG. Your file never leaves your computer.
+
+Made by [Dillon Makes](https://dillonmakes.tech).
+
 It has two modes:
 
 - **Outline mode** works like putting a real object on a scanner. The model is flattened, and its outline is traced at true size in millimeters. Pockets and steps in the part come out as separate colors, so you can engrave each depth with its own setting.
@@ -9,7 +14,9 @@ It has two modes:
 
 ![Before: a 3D mountain plaque with three recessed pockets. After: its SVG, with the red outer cut line and the three pockets traced in blue.](examples/mountain-before-after.png)
 
-## Install
+## Python version
+
+The web version and the Python script give the same results. The script also reads 3MF files and can convert a whole folder at once.
 
 You need Python 3.9 or newer.
 
@@ -112,6 +119,12 @@ The SVGs are sized in millimeters, so they import at 1:1 in LightBurn, Glowforge
 - Slice mode needs a closed (watertight) model. Small gaps are bridged, but a model with large holes in its surface may lose parts of some layers.
 - Units are assumed to be millimeters, which is what nearly all STL files use.
 
+## Web version
+
+The page lives in [`docs/`](docs) and is published with GitHub Pages. It's a JavaScript port of the script (`docs/core.js`) that uses [Clipper](http://www.angusj.com/) by Angus Johnson (Boost Software License) for the 2D shape math. There's no build step: the files are served as they are.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Made by [Dillon Makes](https://dillonmakes.tech).
