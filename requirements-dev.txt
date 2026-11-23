@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest
+# Only to regenerate tests/fixtures (python tests/fixtures/make_fixtures.py):
+manifold3d

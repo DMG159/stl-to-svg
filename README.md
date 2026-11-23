@@ -18,7 +18,7 @@ It has two modes:
 
 The web version and the Python script give the same results. The script also reads 3MF files and can convert a whole folder at once.
 
-You need Python 3.9 or newer.
+You need Python 3. It's tested with Python 3.12 and 3.13.
 
 ```
 pip install -r requirements.txt
@@ -110,14 +110,37 @@ The SVGs are sized in millimeters, so they import at 1:1 in LightBurn, Glowforge
 
 1. The model is loaded with [trimesh](https://trimesh.org/) and turned so you're looking at the chosen side.
 2. **Outline mode:** every triangle is flattened onto the page and merged with [shapely](https://shapely.readthedocs.io/) into one shape. Its edge is the cut line, and any gaps inside it are through-holes. For pockets, the script finds flat surfaces that face you and sit below the top, keeping only the part of each you can actually see. That way, models built from overlapping solids, such as a base slab with walls on top, still come out right.
-3. **Slice mode:** the model is split into its separate solids. Each solid is cut by a flat plane through the middle of every layer, and the cross-sections are merged, so overlapping solids don't leave false holes.
+3. **Slice mode:** the model is cut by a flat plane through the middle of every layer. Each triangle's facing direction tells which side of the cut is inside the material, so the outlines are filled by counting how many solids surround each spot. Overlapping solids add up instead of cancelling out, and a hole inside a solid stays a hole.
 4. Everything is written as SVG paths in millimeters.
 
 ## Limits
 
 - Outline mode only traces outlines and flat floors. A domed or sloped surface, like a sculpted figure, comes out as its outline only. Slice mode handles those shapes.
-- Slice mode needs a closed (watertight) model. Small gaps are bridged, but a model with large holes in its surface may lose parts of some layers.
+- Slice mode needs a closed model whose triangles face outward, which is what CAD programs and model sites normally export. Small gaps are bridged, but a model with large holes in its surface may lose parts of some layers.
 - Units are assumed to be millimeters, which is what nearly all STL files use.
+
+## Testing
+
+Both versions have their own unit tests, and a third set of tests checks that they give the same results.
+
+| Tests | What they cover |
+|---|---|
+| [`tests/test_python.py`](tests/test_python.py) | The Python script: file types (binary and ASCII STL, OBJ, 3MF), every view, outlines, holes, pocket depths, floors hidden under overlapping walls, slicing, glue guides, layer numbers, sheet layout, warnings and the command line |
+| [`tests/core.test.js`](tests/core.test.js) | The same behavior in the web version |
+| [`tests/test_parity.py`](tests/test_parity.py) | Runs both versions on every test model in both modes, and checks the SVGs match: sheet size, shapes in every color, areas, where the lines are, and which pieces are numbered |
+
+Most tests use small models from [`tests/fixtures`](tests/fixtures) with known right answers, such as a 20 × 30 × 5 mm block or a sphere whose slices should have exact radii. Some tests use real models from Thingiverse, the XYZ calibration cube and #3DBenchy ([credits](tests/fixtures/real/CREDITS.md)). Each bug found so far has its own test, so it can't quietly come back.
+
+To run them:
+
+```
+pip install -r requirements-dev.txt
+pytest                 # Python tests and the Python vs web comparison (needs Node.js)
+node --test            # web version tests
+pytest -m "not slow"   # skip the real-model tests, which take about a minute
+```
+
+GitHub runs both sets of tests on every push.
 
 ## Web version
 

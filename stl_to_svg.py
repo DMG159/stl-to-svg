@@ -30,14 +30,15 @@ import argparse
 import math
 import sys
 from collections import defaultdict
-from functools import reduce
 from pathlib import Path
 
 import numpy as np
 import shapely
+import shapely.affinity
+import shapely.errors
 import trimesh
 from shapely.geometry import LineString, MultiPolygon, Polygon
-from shapely.ops import polylabel
+from shapely.ops import polygonize, polylabel
 
 # Each view is (right, up, toward-viewer) in the model's own X/Y/Z.
 VIEWS = {
@@ -70,8 +71,8 @@ def load_oriented(path, view, slice_mode):
         view = "top" if slice_mode else AUTO_VIEW[int(np.argmin(mesh.extents))]
     basis = np.array(VIEWS[view], dtype=float)
     verts = mesh.vertices @ basis.T
-    normals_z = mesh.face_normals @ basis[2]
-    return mesh, verts, np.asarray(mesh.faces), normals_z, view
+    normals = mesh.face_normals @ basis.T
+    return mesh, verts, np.asarray(mesh.faces), normals, view
 
 
 def as_polygons(geom, min_area):
@@ -100,15 +101,40 @@ def as_lines(geom):
     return []
 
 
+SLIVER = 0.005  # mm: triangles seen edge-on flatten thinner than this
+GRID = 0.001    # mm: fallback precision, the same 1 micron grid the web version uses
+
+
+def robust(op, *args):
+    """Run a shapely operation; if near-touching lines confuse it, retry on a 1 micron grid."""
+    args = [np.asarray(a) if isinstance(a, list) else a for a in args]
+    try:
+        return op(*args)
+    except shapely.errors.GEOSException:
+        pass
+    fixed = [shapely.make_valid(a) for a in args]          # repair the shapes themselves
+    try:
+        return op(*fixed)
+    except shapely.errors.GEOSException:
+        return op(*fixed, grid_size=GRID)
+
+
 def flatten(tris_xy, close):
     """Union a stack of 2D triangles into one clean shape."""
-    polys = shapely.polygons(tris_xy)
-    polys = polys[shapely.area(polys) > 1e-9]
+    # Walls seen edge-on flatten into slivers with no real width. They add
+    # nothing to the drawing (the seam closing below fills far wider gaps)
+    # but can make the merge very slow, so leave them out.
+    a, b, c = tris_xy[:, 0], tris_xy[:, 1], tris_xy[:, 2]
+    area2 = np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
+    longest = np.maximum.reduce([np.hypot(*(b - a).T), np.hypot(*(c - b).T), np.hypot(*(a - c).T)])
+    width = np.divide(area2, longest, out=np.zeros_like(area2), where=longest > 0)
+    polys = shapely.polygons(tris_xy[width >= SLIVER])
     if len(polys) == 0:
         return Polygon()
-    shape = shapely.union_all(polys)
+    shape = robust(shapely.union_all, polys)
     # Close the hairline seams that floating-point error leaves between triangles.
-    return shape.buffer(close, join_style="mitre").buffer(-close, join_style="mitre")
+    shape = shape.buffer(close, join_style="mitre").buffer(-close, join_style="mitre")
+    return shape if shape.is_valid else shapely.make_valid(shape)
 
 
 class SvgWriter:
@@ -152,7 +178,8 @@ def line_d(line, tf):
 # --------------------------------------------------------------------------
 
 def convert_outline(path, out_path, view, pockets, min_area, simplify, margin):
-    _, verts, faces, normals_z, view = load_oriented(path, view, False)
+    _, verts, faces, normals, view = load_oriented(path, view, False)
+    normals_z = normals[:, 2]
     tris = verts[faces]
 
     outline = flatten(tris[:, :, :2], close=0.02).simplify(simplify)
@@ -168,15 +195,23 @@ def convert_outline(path, out_path, view, pockets, min_area, simplify, margin):
         flat_tris = tris[flat_up][:, :, :2]
         top = verts[:, 2].max()
         tri_top = z.max(axis=1)
+        tri_x, tri_y = tris[:, :, 0], tris[:, :, 1]
+        tx0, tx1, ty0, ty1 = tri_x.min(1), tri_x.max(1), tri_y.min(1), tri_y.max(1)
         for h in sorted(set(heights), reverse=True):
             depth = top - h
             if depth < 0.05:
                 continue  # that's the top surface itself
             region = flatten(flat_tris[heights == h], close=0.02)
+            if region.area < min_area:
+                continue  # too small to keep, so skip the expensive part
             # Only keep the part of this surface you can actually see from above:
             # models built from overlapping solids can hide a floor under a wall.
-            above = flatten(tris[tri_top > h + 0.05][:, :, :2], close=0.02)
-            region = region.difference(above).buffer(-0.05).buffer(0.05).simplify(simplify)
+            # Only triangles over this surface can hide it, so only merge those.
+            rx0, ry0, rx1, ry1 = region.bounds
+            near = ((tri_top > h + 0.05) & (tx1 >= rx0 - 0.1) & (tx0 <= rx1 + 0.1)
+                    & (ty1 >= ry0 - 0.1) & (ty0 <= ry1 + 0.1))
+            above = flatten(tris[near][:, :, :2], close=0.02)
+            region = robust(shapely.difference, region, above).buffer(-0.05).buffer(0.05).simplify(simplify)
             polys = as_polygons(region, min_area)
             if polys:
                 levels.append((depth, polys))
@@ -208,34 +243,22 @@ def convert_outline(path, out_path, view, pockets, min_area, simplify, margin):
 # Slice mode
 # --------------------------------------------------------------------------
 
-def body_labels(faces, n_verts):
-    """Label each face with the separate solid (connected piece) it belongs to."""
-    lab = np.arange(n_verts)
-    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
-    u, v = e[:, 0], e[:, 1]
-    while True:
-        lu, lv = lab[u], lab[v]
-        new = lab.copy()
-        np.minimum.at(new, lu, lv)
-        np.minimum.at(new, lv, lu)
-        while True:
-            nn = new[new]
-            if np.array_equal(nn, new):
-                break
-            new = nn
-        if np.array_equal(new, lab):
-            break
-        lab = new
-    return lab[faces[:, 0]]
+def section(verts, faces, normals, z):
+    """Cross-section of the model at height z, as a shapely shape.
 
-
-def section_body(verts, faces, z):
-    """Cross-section of one closed solid at height z, as a shapely shape."""
+    Each triangle's facing direction says which side of its slice line is
+    inside the material. The slice outlines are oriented that way and filled
+    by winding number, so overlapping solids add up instead of cancelling,
+    and a hole inside a solid stays a hole.
+    """
+    while np.any(np.abs(verts[:, 2] - z) < 1e-7):
+        z += 1e-5  # avoid slicing exactly through a vertex
     d = verts[faces][:, :, 2] - z
     cross = (d.min(1) < 0) & (d.max(1) > 0)
     if not cross.any():
         return Polygon()
     f = faces[cross]
+    nrm = normals[cross]
     key_cols, pt_cols, mask_cols = [], [], []
     n = len(verts)
     for i, j in ((0, 1), (1, 2), (2, 0)):
@@ -254,6 +277,8 @@ def section_body(verts, faces, z):
     ok = mask.sum(1) == 2
     seg_keys = keys[ok][mask[ok]].reshape(-1, 2)
     seg_pts = pts[ok][mask[ok]].reshape(-1, 2, 2)
+    # Direction a slice line should run so the material is on its left.
+    seg_dir = np.stack([-nrm[ok][:, 1], nrm[ok][:, 0]], 1)
 
     point_of = {}
     adj = defaultdict(list)
@@ -271,6 +296,7 @@ def section_body(verts, faces, z):
         used[s0] = True
         start, cur = seg_keys[s0]
         chain = [start, cur]
+        vote = float(np.dot(point_of[cur] - point_of[start], seg_dir[s0]))
         while cur != start:
             nxt = [s for s in adj[cur] if not used[s]]
             if not nxt:
@@ -278,36 +304,45 @@ def section_body(verts, faces, z):
             s = nxt[0]
             used[s] = True
             k1, k2 = seg_keys[s]
-            cur = k2 if k1 == cur else k1
+            prev, cur = cur, (k2 if k1 == cur else k1)
+            vote += float(np.dot(point_of[cur] - point_of[prev], seg_dir[s]))
             chain.append(cur)
-        coords = [point_of[k] for k in chain]
+        coords = [tuple(point_of[k]) for k in chain]
         closed = chain[-1] == start
-        if not closed and np.linalg.norm(coords[0] - coords[-1]) > 0.5:
+        if closed:
+            coords.pop()
+        elif math.dist(coords[0], coords[-1]) > 0.5:
             continue  # gap in the mesh too big to bridge
-        if len(coords) >= 4:
-            poly = Polygon(coords)
-            if not poly.is_valid:
-                poly = poly.buffer(0)
-            if not poly.is_empty:
-                rings.append(poly)
+        if len(coords) >= 3:
+            rings.append(coords if vote >= 0 else coords[::-1])
+    return winding_fill(rings)
+
+
+def winding_fill(rings):
+    """Fill closed outlines by the non-zero winding rule.
+
+    Outlines running anticlockwise add material and clockwise ones remove it.
+    A spot is solid if the count of outlines around it is anything but zero.
+    """
     if not rings:
         return Polygon()
-    # Rings nested inside rings are holes: alternate in/out (even-odd).
-    return reduce(lambda a, b: a.symmetric_difference(b), rings)
-
-
-def section(verts, faces, labels, z):
-    """Cross-section of the whole model at height z (overlapping solids merged)."""
-    while np.any(np.abs(verts[:, 2] - z) < 1e-7):
-        z += 1e-5  # avoid slicing exactly through a vertex
-    shapes = []
-    for b in np.unique(labels):
-        s = section_body(verts, faces[labels == b], z)
-        if not s.is_empty:
-            shapes.append(s)
-    if not shapes:
+    lines = [LineString(r + [r[0]]) for r in rings]
+    signed = []
+    for r in rings:
+        poly = Polygon(r)
+        area2 = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(r, r[1:] + r[:1]))
+        if area2 != 0:
+            signed.append((poly if poly.is_valid else poly.buffer(0), 1 if area2 > 0 else -1))
+    faces = list(polygonize(shapely.union_all(lines)))
+    if not faces:
         return Polygon()
-    return shapely.union_all(shapes)
+    pts = [face.representative_point() for face in faces]
+    winding = np.zeros(len(faces), int)
+    for poly, sign in signed:
+        shapely.prepare(poly)
+        winding += sign * shapely.contains(poly, pts).astype(int)
+    keep = [face for face, w in zip(faces, winding) if w != 0]
+    return shapely.union_all(keep) if keep else Polygon()
 
 
 # Single-stroke 7-segment digits in a 1 x 1 box (y up).
@@ -332,7 +367,10 @@ def number_lines(text, center, height):
             (ax, ay), (bx, by) = _SEG[seg]
             lines.append(LineString([(cx + ax * CHAR_W * height, y0 + ay * height),
                                      (cx + bx * CHAR_W * height, y0 + by * height)]))
-    return lines
+    # Centre on the strokes actually drawn ("1" is a single line mid-slot).
+    xs = [x for ln in lines for x, _ in ln.coords]
+    shift = center[0] - (min(xs) + max(xs)) / 2
+    return [shapely.affinity.translate(ln, shift, 0) for ln in lines]
 
 
 def place_number(piece, cover, text, max_h=6.0, min_h=2.0):
@@ -363,19 +401,18 @@ def place_number(piece, cover, text, max_h=6.0, min_h=2.0):
 
 def convert_slice(path, out_path, view, thickness, sheet_w, guides, numbers,
                   min_area, simplify, gap=4.0, margin=2.0):
-    _, verts, faces, _, view = load_oriented(path, view, True)
+    _, verts, faces, normals, view = load_oriented(path, view, True)
     zmin, zmax = verts[:, 2].min(), verts[:, 2].max()
     height = zmax - zmin
     # One layer per sheet thickness, sampled through the middle of each layer.
     # A leftover sliver thinner than half a sheet is dropped.
     n_layers = max(1, int(math.floor(height / thickness + 0.5)))
-    labels = body_labels(faces, len(verts))
 
     layers = []
     for i in range(n_layers):
         z = zmin + (i + 0.5) * thickness
         z = min(z, zmax - 1e-3)
-        shape = section(verts, faces, labels, z)
+        shape = section(verts, faces, normals, z)
         shape = shape.buffer(0.02, join_style="mitre").buffer(-0.02, join_style="mitre")
         layers.append(as_polygons(shape.simplify(simplify), min_area))
 
@@ -409,7 +446,8 @@ def convert_slice(path, out_path, view, thickness, sheet_w, guides, numbers,
             cut_g.append(poly_d(p, tf))
             if guides and above is not None:
                 inner = p.buffer(-0.3)
-                for ln in as_lines(above.boundary.intersection(inner)):
+                guide = shapely.line_merge(shapely.union_all(as_lines(above.boundary.intersection(inner)) or [LineString()]))
+                for ln in as_lines(guide):
                     if ln.length > 0.5:
                         guide_g.append(line_d(ln, tf))
             if numbers:

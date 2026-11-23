@@ -9,8 +9,8 @@
     : (typeof require !== 'undefined' ? require('./clipper.js') : null);
 
   const S = 1000;                 // Clipper works in integers: 1 unit = 1 micrometre
+  const SLIVER = 0.005;           // mm: triangles seen edge-on flatten thinner than this
   const NZ = CL.PolyFillType.pftNonZero;
-  const EO = CL.PolyFillType.pftEvenOdd;
 
   // Each view is (right, up, toward-viewer) in the model's own X/Y/Z.
   const VIEWS = {
@@ -156,12 +156,34 @@
       const a = faces[f * 3], b = faces[f * 3 + 1], c = faces[f * 3 + 2];
       const pts = [a, b, c].map(i => ({ X: Math.round(vx[i] * S), Y: Math.round(vy[i] * S) }));
       const area2 = (pts[1].X - pts[0].X) * (pts[2].Y - pts[0].Y) - (pts[2].X - pts[0].X) * (pts[1].Y - pts[0].Y);
-      if (area2 === 0) continue;
+      // Walls seen edge-on flatten into slivers with no real width. They add
+      // nothing to the drawing (the seam closing below fills far wider gaps)
+      // but make Clipper very slow, so leave them out.
+      const longest = Math.max(Math.hypot(pts[1].X - pts[0].X, pts[1].Y - pts[0].Y),
+        Math.hypot(pts[2].X - pts[1].X, pts[2].Y - pts[1].Y), Math.hypot(pts[0].X - pts[2].X, pts[0].Y - pts[2].Y));
+      if (longest === 0 || Math.abs(area2) / longest < SLIVER * S) continue;
       if (area2 < 0) pts.reverse();
       paths.push(pts);
     }
     if (!paths.length) return [];
-    return closeSeams(union(paths), 0.02);
+    return closeSeams(unionMany(paths), 0.02);
+  }
+
+  // Clipper slows down sharply on huge inputs, so merge neighbouring triangles
+  // in small batches first, then merge the batch results pairwise.
+  function unionMany(paths) {
+    const BATCH = 1500;
+    if (paths.length <= BATCH) return union(paths);
+    const cx = p => (p[0].X + p[1].X + p[2].X);
+    const sorted = paths.slice().sort((a, b) => cx(a) - cx(b));
+    let parts = [];
+    for (let i = 0; i < sorted.length; i += BATCH) parts.push(union(sorted.slice(i, i + BATCH)));
+    while (parts.length > 1) {
+      const next = [];
+      for (let i = 0; i < parts.length; i += 2) next.push(i + 1 < parts.length ? union(parts[i].concat(parts[i + 1])) : parts[i]);
+      parts = next;
+    }
+    return parts[0];
   }
 
   // Douglas-Peucker on a closed ring.
@@ -296,11 +318,26 @@
         if (!byLevel.has(k)) byLevel.set(k, []);
         byLevel.get(k).push(f);
       }
+      // Each triangle's flat footprint box, to find which ones sit over a floor.
+      const { vx, vy } = o;
+      const bx = new Float64Array(nf * 4);
+      for (let f = 0; f < nf; f++) {
+        const a = faces[f * 3], b = faces[f * 3 + 1], c = faces[f * 3 + 2];
+        bx[f * 4] = Math.min(vx[a], vx[b], vx[c]); bx[f * 4 + 1] = Math.max(vx[a], vx[b], vx[c]);
+        bx[f * 4 + 2] = Math.min(vy[a], vy[b], vy[c]); bx[f * 4 + 3] = Math.max(vy[a], vy[b], vy[c]);
+      }
       for (const k of [...byLevel.keys()].sort((a, b) => b - a)) {
         const h = k * 0.05, depth = top - h;
         if (depth < 0.05) continue;
         let region = flatten(o, byLevel.get(k));
-        const above = flatten(o, all.filter(f => triTop[f] > h + 0.05));
+        const regionPolys = toPolys(region);
+        const regionArea = regionPolys.reduce((s, p) => s + ringArea(p.outer) - p.holes.reduce((t, r) => t + ringArea(r), 0), 0);
+        if (regionArea < minArea) continue;   // too small to keep, so skip the expensive part
+        // Only triangles over this floor can hide it, so only merge those.
+        const [rx0, ry0, rx1, ry1] = bounds(regionPolys);
+        const above = flatten(o, all.filter(f => triTop[f] > h + 0.05
+          && bx[f * 4 + 1] >= rx0 - 0.1 && bx[f * 4] <= rx1 + 0.1
+          && bx[f * 4 + 3] >= ry0 - 0.1 && bx[f * 4 + 2] <= ry1 + 0.1));
         region = offset(offset(difference(region, above), -0.05), 0.05);
         const polys = asPolygons(simplifyPaths(region, simp), minArea);
         if (polys.length) levels.push({ depth, polys });
@@ -343,33 +380,19 @@
   // Slice mode
   // ------------------------------------------------------------------------
 
-  // Group faces into separate solids (connected pieces).
-  function bodies(faces, nVerts) {
-    const parent = new Int32Array(nVerts);
-    for (let i = 0; i < nVerts; i++) parent[i] = i;
-    const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
-    for (let f = 0; f < faces.length; f += 3) {
-      const a = find(faces[f]), b = find(faces[f + 1]), c = find(faces[f + 2]);
-      parent[b] = a; parent[find(c)] = a;
-    }
-    const groups = new Map();
-    for (let f = 0; f < faces.length / 3; f++) {
-      const r = find(faces[f * 3]);
-      if (!groups.has(r)) groups.set(r, []);
-      groups.get(r).push(f);
-    }
-    return [...groups.values()];
-  }
-
-  // Cross-section of one closed solid at height z, as Clipper paths.
-  function sectionBody(o, faceIdx, z) {
+  // Cross-section of the model at height z, as Clipper paths.
+  // Each triangle's facing direction says which side of its slice line is
+  // inside the material. The outlines are oriented that way and filled by
+  // winding number, so overlapping solids add up instead of cancelling, and
+  // a hole inside a solid stays a hole.
+  function section(o, z) {
     const { vx, vy, vz, faces } = o;
-    const n = vx.length;
-    const segKeys = [], pointOf = new Map(), adj = new Map();
-    for (const f of faceIdx) {
+    const n = vx.length, nf = faces.length / 3;
+    const segKeys = [], segDir = [], pointOf = new Map(), adj = new Map();
+    for (let f = 0; f < nf; f++) {
       const ids = [faces[f * 3], faces[f * 3 + 1], faces[f * 3 + 2]];
-      const d = ids.map(i => vz[i] - z);
-      if (!(Math.min(...d) < 0 && Math.max(...d) > 0)) continue;
+      const d0 = vz[ids[0]] - z, d1 = vz[ids[1]] - z, d2 = vz[ids[2]] - z;
+      if (!(Math.min(d0, d1, d2) < 0 && Math.max(d0, d1, d2) > 0)) continue;
       const keys = [];
       for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
         const lo = Math.min(ids[i], ids[j]), hi = Math.max(ids[i], ids[j]);
@@ -381,8 +404,15 @@
         keys.push(key);
       }
       if (keys.length !== 2) continue;
+      // Face normal from the corner order; the slice line should run along
+      // (-ny, nx) so the material is on its left.
+      const [a, b, c] = ids;
+      const ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a];
+      const wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
+      const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz;
       const s = segKeys.length;
       segKeys.push(keys);
+      segDir.push([-ny, nx]);
       for (const k of keys) { if (!adj.has(k)) adj.set(k, []); adj.get(k).push(s); }
     }
     const used = new Uint8Array(segKeys.length);
@@ -393,12 +423,19 @@
       const start = segKeys[s0][0];
       let cur = segKeys[s0][1];
       const chain = [start, cur];
+      const step = (from, to, s) => {
+        const p = pointOf.get(from), q = pointOf.get(to);
+        return (q[0] - p[0]) * segDir[s][0] + (q[1] - p[1]) * segDir[s][1];
+      };
+      let vote = step(start, cur, s0);
       while (cur !== start) {
         const nxt = adj.get(cur).find(s => !used[s]);
         if (nxt === undefined) break;
         used[nxt] = 1;
         const [k1, k2] = segKeys[nxt];
+        const prev = cur;
         cur = k1 === cur ? k2 : k1;
+        vote += step(prev, cur, nxt);
         chain.push(cur);
       }
       const closed = chain[chain.length - 1] === start;
@@ -408,10 +445,12 @@
         const a = pts[0], b = pts[pts.length - 1];
         if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 0.5) continue;   // gap too big to bridge
       }
-      if (pts.length >= 3) rings.push(pts.map(p => ({ X: Math.round(p[0] * S), Y: Math.round(p[1] * S) })));
+      if (pts.length >= 3) {
+        const ring = pts.map(p => ({ X: Math.round(p[0] * S), Y: Math.round(p[1] * S) }));
+        rings.push(vote >= 0 ? ring : ring.reverse());
+      }
     }
-    // Rings nested inside rings are holes: even-odd fill does exactly that.
-    return rings.length ? union(rings, EO) : [];
+    return rings.length ? union(rings, NZ) : [];
   }
 
   // Single-stroke 7-segment digits in a 1 x 1 box (y up).
@@ -433,7 +472,10 @@
         lines.push([[ox + ax * CHAR_W * h, y0 + ay * h], [ox + bx * CHAR_W * h, y0 + by * h]]);
       }
     });
-    return lines;
+    // Centre on the strokes actually drawn ("1" is a single line mid-slot).
+    const xs = lines.flatMap(l => [l[0][0], l[1][0]]);
+    const shift = cx - (Math.min(...xs) + Math.max(...xs)) / 2;
+    return lines.map(([[ax, ay], [bx, by]]) => [[ax + shift, ay], [bx + shift, by]]);
   }
 
   // "Pole of inaccessibility": the point inside a polygon farthest from its edges.
@@ -514,6 +556,35 @@
     return null;
   }
 
+  // Join line pieces that continue one another into single lines.
+  function joinLines(lines) {
+    const same = (a, b) => a.X === b.X && a.Y === b.Y;
+    let pieces = lines.filter(l => l.length > 1).map(l => l.slice());
+    let joined = true;
+    while (joined) {
+      joined = false;
+      outer: for (let i = 0; i < pieces.length; i++) {
+        for (let j = 0; j < pieces.length; j++) {
+          if (i === j) continue;
+          const a = pieces[i], b = pieces[j];
+          if (same(a[0], a[a.length - 1]) || same(b[0], b[b.length - 1])) continue;
+          let merged = null;
+          if (same(a[a.length - 1], b[0])) merged = a.concat(b.slice(1));
+          else if (same(a[a.length - 1], b[b.length - 1])) merged = a.concat(b.slice(0, -1).reverse());
+          else if (same(a[0], b[0])) merged = a.slice().reverse().concat(b.slice(1));
+          else if (same(a[0], b[b.length - 1])) merged = b.concat(a.slice(1));
+          if (merged) {
+            pieces = pieces.filter((_, k) => k !== i && k !== j);
+            pieces.push(merged);
+            joined = true;
+            break outer;
+          }
+        }
+      }
+    }
+    return pieces;
+  }
+
   function convertSlice(mesh, opts) {
     const t = opts.thickness;
     if (!(t > 0)) throw new Error('layer thickness must be more than 0');
@@ -529,15 +600,13 @@
     // One layer per sheet, traced through its middle; a sliver under half a sheet is dropped.
     const nLayers = Math.max(1, Math.floor(height / t + 0.5));
     if (nLayers > 500) throw new Error(`that would be ${nLayers} layers - check the thickness`);
-    const solids = bodies(o.faces, vz.length);
 
     const layers = [];
     for (let i = 0; i < nLayers; i++) {
       let z = Math.min(zmin + (i + 0.5) * t, zmax - 1e-3);
       for (let guard = 0; guard < 100 && vz.some(v => Math.abs(v - z) < 1e-7); guard++) z += 1e-5;
-      let shape = [];
-      for (const s of solids) shape = shape.concat(sectionBody(o, s, z));
-      if (shape.length) shape = closeSeams(union(shape), 0.02);
+      let shape = section(o, z);
+      if (shape.length) shape = closeSeams(shape, 0.02);
       layers.push(asPolygons(simplifyPaths(shape, simp), minArea));
     }
     const kept = layers.filter(l => l.length);
@@ -565,7 +634,7 @@
           c.AddPaths(offset(pp, -0.3), CL.PolyType.ptClip, true);
           const tree = new CL.PolyTree();
           c.Execute(CL.ClipType.ctIntersection, tree, NZ, NZ);
-          for (const ln of CL.Clipper.OpenPathsFromPolyTree(tree)) {
+          for (const ln of joinLines(CL.Clipper.OpenPathsFromPolyTree(tree))) {
             let len = 0;
             for (let k = 1; k < ln.length; k++) len += Math.hypot(ln[k].X - ln[k - 1].X, ln[k].Y - ln[k - 1].Y);
             if (len / S > 0.5) guideD.push(ringD(ln, tf, false));
@@ -605,7 +674,7 @@
     };
   }
 
-  const api = { parseModel, convertOutline, convertSlice, VIEWS };
+  const api = { parseModel, convertOutline, convertSlice, VIEWS, numberLines };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.StlToSvg = api;
 })(typeof self !== 'undefined' ? self : this);

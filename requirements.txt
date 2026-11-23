@@ -1,3 +1,6 @@
 numpy
 shapely>=2.0
 trimesh
+# Needed only for reading 3MF files:
+networkx
+lxml
