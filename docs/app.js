@@ -37,6 +37,8 @@
 
   document.querySelectorAll('[data-example]').forEach(b => b.addEventListener('click', async () => {
     setMode(b.dataset.mode);
+    state.sourceImg = b.dataset.img;
+    state.sourceAlt = b.querySelector('img').alt;
     try {
       const res = await fetch('examples/' + b.dataset.example);
       if (!res.ok) throw new Error('could not load the example');
@@ -45,6 +47,7 @@
   }));
 
   function loadFile(file) {
+    state.sourceImg = null;   // only the examples come with a picture of the model
     if (!/\.(stl|obj)$/i.test(file.name)) { showError(`${file.name} isn't an STL or OBJ file. Export your model as STL and try again.`); return; }
     const reader = new FileReader();
     reader.onload = () => load(reader.result, file.name);
@@ -110,6 +113,9 @@
     drop.hidden = true;
     $('result').hidden = false;
     $('filename').textContent = state.outName;
+    const hasSource = Boolean(state.sourceImg);
+    $('source').hidden = $('arrow').hidden = !hasSource;
+    if (hasSource) { $('source-img').src = state.sourceImg; $('source-img').alt = state.sourceAlt; }
     $('summary').textContent = r.summary;
     const preview = $('preview');
     preview.innerHTML = r.svg;

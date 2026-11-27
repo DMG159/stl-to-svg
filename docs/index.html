@@ -175,13 +175,18 @@
   .drop svg.icon { width: 56px; height: 56px; margin-bottom: 14px; }
   .drop strong { font-size: 1.3rem; font-variation-settings: "wdth" 112; }
   .drop p { margin: 6px 0 0; color: var(--muted); }
-  .examples { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-  .examples span { color: var(--muted); font-size: 0.9rem; width: 100%; }
-  .examples button {
-    font: inherit; font-size: 0.9rem; color: var(--ink); background: #eef3f1; border: 1px solid var(--line);
-    border-radius: 999px; padding: 6px 14px; cursor: pointer;
+  .examples { margin-top: 26px; width: 100%; max-width: 560px; }
+  .examples > span { display: block; color: var(--muted); font-size: 0.9rem; margin-bottom: 10px; }
+  .example-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .example {
+    font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+    background: #f6f9f8; border: 1px solid var(--line); border-radius: var(--radius-control);
+    padding: 10px; display: flex; flex-direction: column; gap: 8px;
   }
-  .examples button:hover { border-color: var(--mat); }
+  .example:hover { border-color: var(--mat); background: #eef4f1; }
+  .example img { width: 100%; height: auto; aspect-ratio: 700 / 470; object-fit: contain; background: #fff; border-radius: 4px; }
+  .example strong { font-size: 0.98rem; font-variation-settings: "wdth" 100; }
+  .example small { display: block; color: var(--muted); font-size: 0.85rem; }
 
   .result { display: flex; flex-direction: column; flex: 1; }
   .result-head {
@@ -191,6 +196,21 @@
   .filename { font-weight: 700; font-size: 1.05rem; word-break: break-all; }
   .summary { color: var(--muted); font-size: 0.92rem; }
   .preview { padding: 20px; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; }
+  .compare { display: flex; align-items: center; gap: 4px; padding-left: 20px; flex: 1; }
+  .compare .preview { padding-left: 8px; }
+  .source { margin: 0; flex: 0 0 30%; text-align: center; }
+  .source img { width: 100%; height: auto; display: block; }
+  .source figcaption, .after-label { color: var(--muted); font-size: 0.85rem; margin-top: 6px; }
+  .arrow { color: #9aa8a3; font-size: 1.6rem; flex: none; }
+
+  .showcase { padding: 4px 0 48px; }
+  .showcase h2 { font-size: 1.5rem; margin: 0 0 6px; font-variation-settings: "wdth" 118; }
+  .showcase > p { margin: 0 0 22px; color: var(--muted-on-mat); max-width: 40rem; }
+  .shots { display: grid; gap: 20px; }
+  .shot { margin: 0; background: var(--sheet); color: var(--ink); border-radius: var(--radius-sheet); padding: 14px 14px 12px; box-shadow: 0 18px 40px -22px rgba(0,0,0,0.55); }
+  .shot img { width: 100%; height: auto; display: block; }
+  .shot figcaption { padding: 10px 6px 2px; font-size: 0.95rem; color: var(--muted); }
+  .shot figcaption strong { color: var(--ink); }
   .preview svg { width: 100%; height: auto; max-height: 70vh; }
   .preview svg path { stroke-width: 1.3px; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
   .legend { list-style: none; margin: 0; padding: 12px 20px 16px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 0.92rem; }
@@ -216,6 +236,9 @@
     .tool { grid-template-columns: 1fr; }
     .sheet-area { order: -1; }
     .notes { grid-template-columns: 1fr; gap: 20px; }
+    .compare { flex-direction: column; padding: 16px 16px 0; }
+    .source { flex-basis: auto; width: 55%; }
+    .arrow { transform: rotate(90deg); }
     .sheet { min-height: 340px; }
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -295,8 +318,16 @@
             <p>or click to choose one. Your file never leaves your computer.</p>
             <div class="examples">
               <span>No model handy? Try one:</span>
-              <button type="button" data-example="testplate.stl" data-mode="outline">Plate with pockets</button>
-              <button type="button" data-example="dome_ring.stl" data-mode="slice">Ball and ring, sliced</button>
+              <div class="example-list">
+                <button type="button" class="example" data-example="testplate.stl" data-mode="outline" data-img="img/plate-3d.webp">
+                  <img src="img/plate-3d.webp" width="700" height="459" alt="3D view of a flat plate with a round hole and a stepped square pocket">
+                  <span><strong>Plate with pockets</strong><small>Traced as an outline, with each pocket depth in its own color</small></span>
+                </button>
+                <button type="button" class="example" data-example="dome_ring.stl" data-mode="slice" data-img="img/ball-ring-3d.webp">
+                  <img src="img/ball-ring-3d.webp" width="700" height="488" alt="3D view of a ball on a short pedestal next to a ring">
+                  <span><strong>Ball and ring</strong><small>Sliced into 3 mm layers to cut and stack</small></span>
+                </button>
+              </div>
             </div>
           </div>
           <div class="result" id="result" hidden>
@@ -304,7 +335,14 @@
               <span class="filename" id="filename"></span>
               <span class="summary" id="summary" aria-live="polite"></span>
             </div>
-            <div class="preview" id="preview"></div>
+            <div class="compare">
+              <figure class="source" id="source" hidden>
+                <img id="source-img" alt="">
+                <figcaption>The 3D model</figcaption>
+              </figure>
+              <span class="arrow" id="arrow" aria-hidden="true" hidden>&#8594;</span>
+              <div class="preview" id="preview"></div>
+            </div>
             <ul class="warnings" id="warnings"></ul>
             <ul class="legend" id="legend"></ul>
           </div>
@@ -314,6 +352,29 @@
         <input type="file" id="file" accept=".stl,.obj" hidden>
       </div>
     </main>
+
+    <section class="showcase" aria-labelledby="showcase-title">
+      <h2 id="showcase-title">Before and after</h2>
+      <p>Real conversions: each 3D model next to the laser file it becomes.</p>
+      <div class="shots">
+        <figure class="shot">
+          <picture>
+            <source media="(max-width: 700px)" srcset="img/mountain-before-after-tall.webp" width="900" height="1424">
+          <img src="img/mountain-before-after.webp" width="2000" height="722" loading="lazy"
+               alt="Before: a 3D mountain plaque with three recessed pockets. After: its SVG, with the red outer cut line and the three pockets traced in blue.">
+          </picture>
+          <figcaption><strong>Outline mode.</strong> A mountain plaque becomes a cut line, plus its three pockets in blue to engrave 6.6 mm deep.</figcaption>
+        </figure>
+        <figure class="shot">
+          <picture>
+            <source media="(max-width: 700px)" srcset="img/ball-ring-before-after-tall.webp" width="900" height="1534">
+          <img src="img/ball-ring-before-after.webp" width="2000" height="776" loading="lazy"
+               alt="Before: a ball on a short pedestal and a ring. After: 17 numbered circular layers of 3 mm, with blue glue guides.">
+          </picture>
+          <figcaption><strong>Slice mode.</strong> A ball and a ring become 17 numbered layers of 3 mm plywood, with glue guides showing where each layer sits.</figcaption>
+        </figure>
+      </div>
+    </section>
 
     <section class="notes">
       <div>
